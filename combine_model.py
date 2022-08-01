@@ -70,7 +70,7 @@ def combine_roberta(version):
     # assert model.lm_head.decoder.weight.data.shape == new_decoder.weight.data.shape 
     model.roberta.embeddings.word_embeddings = new_word_embedding
     model.lm_head.decoder = new_decoder
-    model.lm_head.decoder.bias = new_decoder_bias
+    model.lm_head.decoder.bias.data = new_decoder_bias.data
     model.lm_head.bias = model.lm_head.decoder.bias 
 
     model.config.__dict__['vocab_size'] = new_size
