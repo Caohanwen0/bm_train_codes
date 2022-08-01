@@ -71,7 +71,7 @@ def combine_roberta(version):
     model.roberta.embeddings.word_embeddings = new_word_embedding
     model.lm_head.decoder = new_decoder
     model.lm_head.decoder.bias = new_decoder_bias
-    model.lm_head.bias = model.decoder.bias 
+    model.lm_head.bias = model.lm_head.decoder.bias 
 
     model.config.__dict__['vocab_size'] = new_size
     torch.save(model.state_dict(), os.path.join(save_prefix, version + '.pt'))
