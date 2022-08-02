@@ -141,8 +141,9 @@ def convert_model(model_dict_path, config_json_path, save_path):
     dict = roberta.state_dict()
     new_dict['pooler.dense.weight'] = dict['pooler.dense.weight']
     new_dict['pooler.dense.bias'] = dict['pooler.dense.bias']
-
+    os.makedirs(save_path,exist_ok=True)
     torch.save(new_dict, os.path.join(save_path, 'model.pt'))
+    print(f"Saving model to path {os.path.join(save_path, 'model.pt')}.")
 
 
 if __name__ == "__main__":
