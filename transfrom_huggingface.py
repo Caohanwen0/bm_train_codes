@@ -8,7 +8,7 @@ from transformers import RobertaModel, RobertaConfig, RobertaForMaskedLM
 from model_center.model.config import RobertaConfig as myConfig
 
 
-def convert_from_huggingface(version):
+def convert_from_huggingface(version, save_path):
     config: RobertaConfig = RobertaConfig.from_pretrained(version)
 
     num_layers = config.num_hidden_layers
@@ -72,16 +72,16 @@ def convert_from_huggingface(version):
     dict = roberta.state_dict()
     new_dict['pooler.dense.weight'] = dict['pooler.dense.weight']
     new_dict['pooler.dense.bias'] = dict['pooler.dense.bias']
-    save_output ='/data0/private/caohanwen/OpenSoCo/checkpoint/roberta-small'
-    os.makedirs(save_output,exist_ok=True)
-    torch.save(new_dict, os.path.join(save_output,'pytorch_model.pt'))
 
-def convert_model():
-    config: RobertaConfig = RobertaConfig.from_pretrained('nyu-mll/roberta-med-small-1M-1')
+    os.makedirs(save_path,exist_ok=True)
+    torch.save(new_dict, os.path.join(save_path,'transformed' + version + '.pt'))
+
+def convert_model(model_dict_path, config_json_path, save_path):
+    config: RobertaConfig = RobertaConfig.from_json_file(config_json_path)
 
     num_layers = config.num_hidden_layers
     lmhead_bert = RobertaForMaskedLM(config) # it has a language modeling head at top
-    lmhead_bert.load_state_dict(torch.load('/data0/private/caohanwen/OpenSoCo/checkpoint/roberta-small/model.pt', map_location = "cpu"))
+    lmhead_bert.load_state_dict(torch.load(model_dict_path, map_location = "cpu"))
     dict = lmhead_bert.state_dict()
     new_dict = OrderedDict()
 
@@ -142,7 +142,7 @@ def convert_model():
     new_dict['pooler.dense.weight'] = dict['pooler.dense.weight']
     new_dict['pooler.dense.bias'] = dict['pooler.dense.bias']
 
-    torch.save(new_dict, '/data0/private/caohanwen/OpenSoCo/checkpoint/roberta-small/pytorch_model.pt')
+    torch.save(new_dict, os.path.join(save_path, 'model.pt'))
 
 
 if __name__ == "__main__":
