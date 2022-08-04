@@ -74,7 +74,7 @@ def convert_from_huggingface(version, save_path):
     new_dict['pooler.dense.bias'] = dict['pooler.dense.bias']
 
     os.makedirs(save_path,exist_ok=True)
-    torch.save(new_dict, os.path.join(save_path,'transformed' + version + '.pt'))
+    torch.save(new_dict, os.path.join(save_path,'transformed-' + version + '.pt'))
 
 def convert_model(model_dict_path, config_json_path, save_path):
     config: RobertaConfig = RobertaConfig.from_json_file(config_json_path)
@@ -143,7 +143,7 @@ def convert_model(model_dict_path, config_json_path, save_path):
     new_dict['pooler.dense.bias'] = dict['pooler.dense.bias']
     os.makedirs(save_path,exist_ok=True)
     torch.save(new_dict, os.path.join(save_path, 'model.pt'))
-    print(f"Saving model to path {os.path.join(save_path, 'model.pt')}.")
+    print(f"Saving model to path {os.path.join(save_path, 'transformed_model.pt')}.")
 
 
 if __name__ == "__main__":
