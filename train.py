@@ -1,4 +1,6 @@
 import torch
+import os
+os.environ["CUDA_VISIBLE_DEVICES"]=','.join(map(str,[2,3,4,5,6,7]))
 import bmtrain as bmp
 from bmtrain import print_rank
 from model_center.model import Bert, BertConfig, Roberta, RobertaConfig
@@ -10,15 +12,13 @@ from torch.utils.tensorboard import SummaryWriter
 #from transformers import 
 import time
 from arguments import get_args
-import os
+import random
+from sklearn.metrics import accuracy_score
 from tokenizers import Tokenizer, ByteLevelBPETokenizer
-def get_tokenizer():
-    tokenizer= ByteLevelBPETokenizer.from_pretrained(vocab = '/home/user/bm_train_codes/tokenizer/tokenizer_.json') 
-    return tokenizer
+
 
 def get_model(args):
-    # model = Roberta.from_pretrained('roberta-base')
-    config = RobertaConfig.from_pretrained("roberta-base") 
+    config = RobertaConfig.from_json_file(args.model_config)
     model = Roberta(config)
     if args.load != None:
         print_rank(f"Loading from checkpoint {args.load}")
@@ -42,15 +42,7 @@ def get_optimizer(args, model):
 def get_learning_rate_scheduler(args, optimizer):
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters * args.epochs
-    lr_scheduler = None
-    if args.lr_decay_style == "noam":
-        lr_scheduler = bmp.lr_scheduler.Noam(optimizer, 
-                                         start_lr = args.lr,
-                                         warmup_iter = args.warmup_iters, 
-                                         end_iter = args.lr_decay_iters,
-                                         num_iter = args.start_step)
-    elif args.lr_decay_style == "linear":
-        lr_scheduler = bmp.lr_scheduler.Linear(optimizer, 
+    lr_scheduler = bmp.lr_scheduler.Linear(optimizer, 
                                          start_lr = args.lr,
                                          warmup_iter = args.warmup_iters, 
                                          end_iter = args.lr_decay_iters,
@@ -82,14 +74,12 @@ def get_dataset(args):
 
 def batch_iter(args, dataset):
     st = args.start_step * args.batch_size
-    # st = 0
     input_ids_list = []
     attention_mask_list = []
     labels_list = []
     while True:
         input_ids, attention_mask, labels = dataset[st]
         st += 1
-        # bmp.print_rank(f"##################\ninput_ids={input_ids},\nattention={attention_mask}, \nlabel={labels}")
         input_ids_list.append(input_ids)
         labels_list.append(labels)
         attention_mask_list.append(attention_mask)
@@ -121,17 +111,19 @@ def pretrain(args, model, optimizer, lr_scheduler, dataset):
         input_ids = data['input_ids'].cuda()
         attention_mask = data['attention_mask'].cuda()
         labels = data['labels'].cuda()
-        logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits = True, attention_3dim = True)
+        logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits = True)
         # output = model(input_ids=input_ids, attention_mask=attention_mask)
         # logits = output.logits
         loss = loss_func(logits.view(-1, logits.size(-1)), labels.view(-1))
         global_loss = bmp.sum_loss(loss).item()
         log_loss += global_loss
         loss = optimizer.loss_scale(loss)
+        loss = loss / args.gradient_accumulate
         loss.backward()
-        grad_norm = bmp.optim.clip_grad_norm(optimizer.param_groups, \
-            max_norm = float('inf'), scale = optimizer.scale, norm_type = 2)
-        bmp.optim_step(optimizer, lr_scheduler)
+        if (start_step + step + 1) % args.gradient_accumulate == 0:
+            grad_norm = bmp.optim.clip_grad_norm(optimizer.param_groups, \
+                max_norm = float('inf'), scale = optimizer.scale, norm_type = 2)
+            bmp.optim_step(optimizer, lr_scheduler)
 
         if (start_step + step + 1) % args.log_iters == 0:
             bmp.print_rank(
@@ -145,12 +137,12 @@ def pretrain(args, model, optimizer, lr_scheduler, dataset):
                     )
                 )
             log_loss = 0
-
         if bmp.rank() == 0:
             writer.add_scalar("Loss/train", global_loss, step + start_step)
         if args.save != None and (step + start_step + 1) % args.save_iters == 0:
             bmp.print_rank(f"Saving checkpoint at {step + start_step} step.")
             bmp.save(model, os.path.join(args.save, 'checkpoints', "checkpoint-%d.pt" % (step + start_step)))
+
 
 def initialize():
     # get arguments
@@ -172,18 +164,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-    # args = initialize()
-    # config = RobertaConfig.from_pretrained('roberta-base')
-    # tokenizer = get_tokenizer()
-    # input_ids = MMapIndexedDataset('/home/caohanwen/bm_train_codes/masked_output/original_wwm/input_ids_0_38')
-    # length_list = MMapIndexedDataset('/home/caohanwen/bm_train_codes/masked_output/original_wwm/length_list_0_38')
-    # masked_labels = MMapIndexedDataset('/home/caohanwen/bm_train_codes/masked_output/original_wwm/masked_labels_0_38')
-    # lm_pos = MMapIndexedDataset('/home/caohanwen/bm_train_codes/masked_output/original_wwm/lm_pos_0_38')
-    # bert_dataset = BertDataset(input_ids, lm_pos, masked_labels, length_list)
-    
-    # for i in range(len(bert_dataset)):
-    #     if len(length_list[i]) != 0:
-    #         input_ids, attention_mask, labels = bert_dataset[i]
-    #         bmp.print_rank(input_ids[0])
-    #         bmp.print_rank(attention_mask.shape)
-    #         break
+
