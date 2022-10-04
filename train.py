@@ -1,5 +1,5 @@
 import torch,os
-os.environ["CUDA_VISIBLE_DEVICES"]=','.join(map(str,[6,7,]))
+os.environ["CUDA_VISIBLE_DEVICES"]=','.join(map(str,[4,5,6,7,]))
 import bmtrain as bmp
 from model_center.model import Roberta, RobertaConfig
 from model_center.tokenizer import BertTokenizer
@@ -93,7 +93,7 @@ def valid(model, twitter_dev_dataloader,reddit_dev_dataloader, ccnews_dev_datalo
             for data in dev_dataloader:
                 input_ids, attention_mask, labels = data
                 input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
-                logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True)
+                logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True, step = start_step + step + 1)
                 loss = loss_func(logits.view(-1, logits.shape[-1]), labels.view(-1))
                 global_loss = bmp.sum_loss(loss).item()
                 valid_loss += global_loss
@@ -153,7 +153,7 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, twitter_dev_da
         input_ids = data['input_ids'].cuda()
         attention_mask = data['attention_mask'].cuda()
         labels = data['labels'].cuda()
-        logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True)
+        logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True, step = start_step + step + 1)
         loss = loss_func(logits.view(-1, logits.size(-1)), labels.view(-1))
         global_loss = bmp.sum_loss(loss).item()
         log_loss += global_loss
