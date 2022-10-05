@@ -31,6 +31,11 @@ def get_optimizer(args, model):
                                                 betas = (0.9, 0.98),
                                                 weight_decay=args.weight_decay, 
                                                 scale=args.loss_scale)
+    if args.load is not None:
+        if os.path.exists(os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % 0)):
+            states = torch.load(
+                os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % (bmp.rank())))
+            optimizer.load_state_dict(states)
     return optimizer
 
 def get_learning_rate_scheduler(args, optimizer):
@@ -82,32 +87,26 @@ def get_valid_dataset(dataset_path):
 
     return bert_dataset
 
-def valid(model, twitter_dev_dataloader,reddit_dev_dataloader, ccnews_dev_dataloader, loss_func, step, writer):
-    return
+def valid(model, dev_dataloader, loss_func, step, writer):
     model.eval()
     valid_loss = 0
     with torch.no_grad():
-        dataloader_list = [twitter_dev_dataloader,reddit_dev_dataloader, ccnews_dev_dataloader] 
-        valid_data_name = ['twitter', 'reddit', 'ccnews']
-        for dev_dataloader, dev_name in zip(dataloader_list, valid_data_name):
-            for data in dev_dataloader:
-                input_ids, attention_mask, labels = data
-                input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
-                logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True, step = start_step + step + 1)
-                loss = loss_func(logits.view(-1, logits.shape[-1]), labels.view(-1))
-                global_loss = bmp.sum_loss(loss).item()
-                valid_loss += global_loss
-            if bmp.rank() == 0:
-                writer.add_scalar(f"Loss/{dev_name}", valid_loss, step)
-            print_rank(model, "*")
-            bmp.print_rank(
-                            "{} | Iter: {:6d} | valid {} loss: {:.4f}".format(
-                                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                                step,
-                                dev_name,
-                                valid_loss / len(dev_dataloader)
-                            )
+        for data in dev_dataloader:
+            input_ids, attention_mask, labels = data
+            input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
+            logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True)
+            loss = loss_func(logits.view(-1, logits.shape[-1]), labels.view(-1))
+            global_loss = bmp.sum_loss(loss).item()
+            valid_loss += global_loss
+        if bmp.rank() == 0:
+            writer.add_scalar("Loss/dev", valid_loss, step)
+        bmp.print_rank(
+                        "{} | Iter: {:6d} | valid  loss: {:.4f}".format(
+                            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                            step,
+                            valid_loss / len(dev_dataloader)
                         )
+                    )
     model.train()
 
 def batch_iter(args, dataset):
@@ -133,8 +132,7 @@ def batch_iter(args, dataset):
             attention_mask_list = []
             labels_list = []
 
-def pretrain(args, model, optimizer, lr_scheduler, train_dataset, twitter_dev_dataloader,\
-    reddit_dev_dataloader, ccnews_dev_dataloader):
+def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader):
     average_time = 0
     average_time_shift = 0.9
     loss_func = bmp.loss.FusedCrossEntropy(ignore_index=-100)
@@ -142,12 +140,12 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, twitter_dev_da
     start_step = args.start_step
     log_loss = 0
     os.makedirs(os.path.join(args.save, 'checkpoints'), exist_ok=True)
+    os.makedirs(os.path.join(args.save, 'optimizers'), exist_ok=True)
     if bmp.rank() == 0:
         writer = SummaryWriter(os.path.join(args.save, 'tensorborads'))
     else:
         writer = None
-    valid(model, twitter_dev_dataloader,\
-        reddit_dev_dataloader, ccnews_dev_dataloader, loss_func, start_step // args.gradient_accumulate, writer)
+    valid(model, dev_dataloader, loss_func, start_step // args.gradient_accumulate, writer)
     for step, data in enumerate(batch_iter(args, train_dataset)):
         optimizer.zero_grad()
         input_ids = data['input_ids'].cuda()
@@ -180,13 +178,15 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, twitter_dev_da
 
         if (start_step + step + 1) % args.valid_iters == 0:
             print_inspect(model, "*")
-            valid(model, twitter_dev_dataloader, reddit_dev_dataloader, ccnews_dev_dataloader, loss_func, (start_step + step + 1) // args.gradient_accumulate, writer)
+            valid(model, dev_dataloader, loss_func, (start_step + step + 1) // args.gradient_accumulate, writer)
 
         if bmp.rank() == 0:
             writer.add_scalar("Loss/train", global_loss, (step + start_step) // args.gradient_accumulate)
         if args.save != None and (step + start_step + 1) % args.save_iters == 0:
             bmp.save(model, os.path.join(args.save, 'checkpoints', "checkpoint-%d.pt" % (step + start_step)))
-            print_inspect(model, "*")
+            # save optimizer
+            torch.save(optimizer.state_dict(),
+                os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % (bmp.rank())))
             bmp.print_rank(f"Saving checkpoint at {step + start_step} step.")
 
 def initialize():
@@ -204,15 +204,9 @@ def main():
     print(args)
     model, optimizer, lr_scheduler = setup_model_and_optimizer(args)
     train_dataset = get_train_dataset(args)
-    twitter_valid_dataset = get_valid_dataset(args.test_dataset_twitter)
-    reddit_valid_dataset = get_valid_dataset(args.test_dataset_reddit) 
-    ccnews_valid_dataset = get_valid_dataset(args.test_dataset_ccnews)
-    twitter_dev_dataloader = DistributedDataLoader(twitter_valid_dataset, batch_size=args.batch_size, shuffle=False)
-    reddit_dev_dataloader = DistributedDataLoader(reddit_valid_dataset, batch_size=args.batch_size, shuffle=False)
-    ccnews_dev_dataloader = DistributedDataLoader(ccnews_valid_dataset, batch_size=args.batch_size, shuffle=False) 
-    pretrain(args, model, optimizer, lr_scheduler, train_dataset, twitter_dev_dataloader,\
-        reddit_dev_dataloader, ccnews_dev_dataloader)
+    valid_dataset = get_valid_dataset(args.test_dataset)
+    dev_dataloader = DistributedDataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False)
+    pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader)
 
 if __name__ == '__main__':
     main()
-
