@@ -1,5 +1,5 @@
 import torch,os
-os.environ["CUDA_VISIBLE_DEVICES"]=','.join(map(str,[4,5,6,7,]))
+os.environ["CUDA_VISIBLE_DEVICES"]=','.join(map(str,[4,5,7,]))
 import bmtrain as bmp
 from model_center.model import Roberta, RobertaConfig
 from model_center.tokenizer import BertTokenizer
@@ -36,6 +36,8 @@ def get_optimizer(args, model):
             states = torch.load(
                 os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % (bmp.rank())))
             optimizer.load_state_dict(states)
+            # for name, param in optimizer.state_dict().items():
+            #     print(name, param)
     return optimizer
 
 def get_learning_rate_scheduler(args, optimizer):
@@ -160,14 +162,19 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader
         loss.backward()
         if (start_step + step + 1) % args.gradient_accumulate == 0:
             grad_norm = bmp.optim.clip_grad_norm(optimizer.param_groups, args.clip_grad, scale = optimizer.scale, norm_type = 2)
-            bmp.optim_step(optimizer, lr_scheduler)
+            try:
+                bmp.optim_step(optimizer, lr_scheduler)
+            except:
+                for name, param in model.state_dict().items():
+                    print(name, param)
+                    print("grad=", param.grad)
 
         if (start_step + step + 1) % args.log_iters == 0:
             print_inspect(model, "*")
             bmp.print_rank(
                     "{} | Iter: {:6d} | loss: {:.4f} | lr: {:.4e}, scale: {:10.4f} | grad_norm: {:.4f}".format(
                         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                        step + 1 + start_step,
+                        (step + 1 + start_step) // args.gradient_accumulate,
                         log_loss / args.log_iters,
                         lr_scheduler.current_lr,
                         int(optimizer.scale),
@@ -181,13 +188,13 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader
             valid(model, dev_dataloader, loss_func, (start_step + step + 1) // args.gradient_accumulate, writer)
 
         if bmp.rank() == 0:
-            writer.add_scalar("Loss/train", global_loss, (step + start_step) // args.gradient_accumulate)
+            writer.add_scalar("Loss/train", global_loss, (step + start_step + 1) // args.gradient_accumulate)
         if args.save != None and (step + start_step + 1) % args.save_iters == 0:
-            bmp.save(model, os.path.join(args.save, 'checkpoints', "checkpoint-%d.pt" % (step + start_step)))
+            bmp.save(model, os.path.join(args.save, 'checkpoints', "checkpoint-%d.pt" % (step + start_step + 1)))
             # save optimizer
             torch.save(optimizer.state_dict(),
                 os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % (bmp.rank())))
-            bmp.print_rank(f"Saving checkpoint at {step + start_step} step.")
+            bmp.print_rank(f"Saving checkpoint at {step + start_step + 1} step.")
 
 def initialize():
     # get arguments
