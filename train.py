@@ -149,7 +149,8 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader
         writer = None
     valid(model, dev_dataloader, loss_func, start_step // args.gradient_accumulate, writer)
     for step, data in enumerate(batch_iter(args, train_dataset)):
-        optimizer.zero_grad()
+        if (start_step + step + 1) % args.gradient_accumulate == 1:
+            optimizer.zero_grad() # when not doing
         input_ids = data['input_ids'].cuda()
         attention_mask = data['attention_mask'].cuda()
         labels = data['labels'].cuda()
