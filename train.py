@@ -1,5 +1,7 @@
-import torch,os
-os.environ["CUDA_VISIBLE_DEVICES"]=','.join(map(str,[4,5,7,]))
+import hfai_env
+hfai_env.set_env("fine-tune")
+from turtle import st
+import torch,os,hfai
 import bmtrain as bmp
 from model_center.model import Roberta, RobertaConfig
 from model_center.tokenizer import BertTokenizer
@@ -12,16 +14,33 @@ import time
 from arguments import get_args
 import os
 
+def get_file_path(root_dir):
+    p = []
+    for root, dirs, files in os.walk(root_dir):
+        for name in files:
+            if name[0] != '.':
+                p.append(os.path.join(root, name))
+    return p
+
+def get_last_step(args, current_step):
+    p = get_file_path(os.path.join(args.save, 'checkpoints'))
+    last_step = 0
+    for filename in p:
+        step = int(filename.split('/')[-1].split('.')[-2].split('-')[-1])
+        if step > last_step and step != current_step:
+            last_step = step
+    return last_step
+
 def get_model(args):
     config = RobertaConfig.from_json_file(args.model_config)
     assert isinstance(config, RobertaConfig)
     model = Roberta(config)
-    if args.load != None:
+    if (args.load != None) and (get_last_step(args, 0) == 0):
         bmp.print_rank(f"Loading from checkpoint {args.load}...")
         bmp.load(model, args.load)
     else:
-        bmp.print_rank("Training model from scratch...")
-        bmp.init_parameters(model)
+        bmp.print_rank(f"Loading from checkpoint-{args.start_step}.pt...")
+        bmp.load(model, os.path.join(args.save, "checkpoints", f"checkpoint-{args.start_step}.pt"))
     print_inspect(model, "*")
     return model
 
@@ -154,7 +173,7 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader
         input_ids = data['input_ids'].cuda()
         attention_mask = data['attention_mask'].cuda()
         labels = data['labels'].cuda()
-        logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True, step = start_step + step + 1)
+        logits = model(input_ids=input_ids, attention_mask=attention_mask, return_logits=True)
         loss = loss_func(logits.view(-1, logits.size(-1)), labels.view(-1))
         global_loss = bmp.sum_loss(loss).item()
         log_loss += global_loss
@@ -169,9 +188,10 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader
                 for name, param in model.state_dict().items():
                     print(name, param)
                     print("grad=", param.grad)
+                    exit(0)
 
         if (start_step + step + 1) % args.log_iters == 0:
-            print_inspect(model, "*")
+            # print_inspect(model, "*")
             bmp.print_rank(
                     "{} | Iter: {:6d} | loss: {:.4f} | lr: {:.4e}, scale: {:10.4f} | grad_norm: {:.4f}".format(
                         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -194,14 +214,30 @@ def pretrain(args, model, optimizer, lr_scheduler, train_dataset, dev_dataloader
             bmp.save(model, os.path.join(args.save, 'checkpoints', "checkpoint-%d.pt" % (step + start_step + 1)))
             # save optimizer
             torch.save(optimizer.state_dict(),
-                os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % (bmp.rank())))
-            bmp.print_rank(f"Saving checkpoint at {step + start_step + 1} step.")
+                os.path.join(args.save, 'optimizers', "optimizer.rank-%d.opt" % (bmp.rank())))           
+            bmp.print_rank(f"Saving checkpoint at {(step + start_step + 1) } step.")
+        if hfai.distributed.get_rank() == 0 and bmp.rank() == 0: # 获取当前节点序号。在0号节点的0号进程上接收集群调度信息
+            if hfai.client.receive_suspend_command(): 
+                bmp.save(model, os.path.join(args.save, 'checkpoints', "checkpoint-%d.pt" % (step + start_step)))
+                if bmp.rank()==0:
+                    torch.save(optimizer, os.path.join(args.save, 'optimizers', "optimizer-%d.pt" % (step + start_step)))
+                bmp.print_rank(f"Hfai got suspended at at {(step + start_step + 1)} step.")
+                hfai.client.go_suspend()
+        
+
+        
 
 def initialize():
     # get arguments
     args = get_args()
     # init bmp 
+    bmp.print_rank("Init bmp distributed.")
     bmp.init_distributed(seed = args.seed, loss_scale_factor = 2, loss_scale_steps = 1024)
+    
+    bmp.print_rank("Init torch distributed.")
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12423'
+    torch.distributed.init_process_group("gloo", rank=bmp.rank(), world_size=bmp.world_size())
     # init save folder
     if args.save != None:
         os.makedirs(args.save, exist_ok=True)
@@ -209,6 +245,9 @@ def initialize():
 
 def main():
     args = initialize()
+    last_step = get_last_step(args, args.start_step)
+    if last_step > args.start_step:
+        args.start_step = last_step
     print(args)
     model, optimizer, lr_scheduler = setup_model_and_optimizer(args)
     train_dataset = get_train_dataset(args)
